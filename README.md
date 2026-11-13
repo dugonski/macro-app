@@ -14,6 +14,7 @@ que já vem no Windows: não precisa instalar nada nem rodar nenhum `.exe`.
 |-----------|-----------------------------------------------------------------------|
 | `/pdfs`   | Abre no navegador o PDF de cada part number (MD04, centro 8500)       |
 | `/ajuda`  | Mostra os comandos                                                    |
+| `/diagnostico` | Testa a conexão com o SAP passo a passo                          |
 | `/limpar` | Limpa a tela                                                          |
 | `/sair`   | Fecha o app                                                           |
 
