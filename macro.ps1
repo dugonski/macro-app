@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Bits = 32
 if ([Environment]::Is64BitProcess) { $Bits = 64 }
-$Versao = "0.1.2 ($Bits bits)"
+$Versao = "0.1.3 ($Bits bits)"
 if (-not $Raiz) { $Raiz = $PSScriptRoot }
 
 $Destaque = 'DarkYellow'
@@ -25,6 +25,24 @@ $script:MaterialSimulado = ''
 
 $ModosDeChamada = @('InvokeMethod', 'GetProperty', 'InvokeMethod,GetProperty')
 
+# O SAP procura a biblioteca de scripting conforme o idioma informado na chamada,
+# e em algumas instalações só um deles funciona. Enquanto não se sabe qual, as
+# chamadas de conexão tentam todos; depois fica valendo o que funcionou.
+$script:IdiomaCom = $null
+$script:IdiomaComDefinido = $false
+$script:UltimoIdioma = $null
+
+function Obter-IdiomasCom {
+    if ($script:IdiomaComDefinido) { return , @($script:IdiomaCom) }
+    return , @($null, [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Obter-MensagemDeErro($Registro) {
+    $erro = $Registro.Exception
+    while ($erro.InnerException) { $erro = $erro.InnerException }
+    return $erro.Message
+}
+
 # Chama um método ou propriedade pelo nome (IDispatch), como o VBA faz.
 # $Modos lista as formas de chamada a tentar, em ordem. A vírgula no retorno
 # impede o PowerShell de desmontar objetos do SAP que são coleções.
@@ -32,17 +50,25 @@ function Invoke-Com($Alvo, [string]$Nome, [object[]]$Argumentos = @(), [string[]
     $tipo = $Alvo.GetType()
     $ultimoErro = ''
     foreach ($modo in $Modos) {
-        try {
-            $resultado = $tipo.InvokeMember($Nome, [System.Reflection.BindingFlags]$modo, $null, $Alvo, $Argumentos)
-            return , $resultado
-        }
-        catch {
-            $erro = $_.Exception
-            while ($erro.InnerException) { $erro = $erro.InnerException }
-            $ultimoErro = $erro.Message
+        foreach ($idioma in (Obter-IdiomasCom)) {
+            try {
+                $resultado = $tipo.InvokeMember($Nome, [System.Reflection.BindingFlags]$modo, $null, $Alvo, $Argumentos, $null, $idioma, $null)
+                $script:UltimoIdioma = $idioma
+                return , $resultado
+            }
+            catch { $ultimoErro = Obter-MensagemDeErro $_ }
         }
     }
     throw "$Nome falhou: $ultimoErro"
+}
+
+# Duas formas de achar o SAP aberto; a segunda é o utilitário que o próprio SAP GUI instala.
+$FontesDoSap = [ordered]@{
+    'GetObject' = { , [System.Runtime.InteropServices.Marshal]::BindToMoniker('SAPGUI') }
+    'SapROTWr'  = {
+        $rot = New-Object -ComObject 'SapROTWr.SapROTWrapper'
+        , (Invoke-Com $rot 'GetROTEntry' @('SAPGUI') $ModosDeChamada)
+    }
 }
 
 # Equivale a GetObject("SAPGUI").GetScriptingEngine.Children(0).Children(0).
@@ -51,36 +77,24 @@ function Conectar-Sap {
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') {
         throw 'o SAP GUI só está disponível no Windows (use --simular para testar)'
     }
+    $script:IdiomaComDefinido = $false
 
-    # Duas formas de achar o SAP aberto; a segunda é o utilitário que o próprio SAP GUI instala.
-    $fontes = @(
-        { , [System.Runtime.InteropServices.Marshal]::BindToMoniker('SAPGUI') },
-        {
-            $rot = New-Object -ComObject 'SapROTWr.SapROTWrapper'
-            , (Invoke-Com $rot 'GetROTEntry' @('SAPGUI') $ModosDeChamada)
-        }
-    )
     $motor = $null
     $achouSap = $false
     $detalhes = [System.Collections.Generic.List[string]]::new()
-    foreach ($fonte in $fontes) {
+    foreach ($fonte in $FontesDoSap.Values) {
         $gui = $null
         try { $gui = & $fonte } catch { }
         if ($null -eq $gui) { continue }
         $achouSap = $true
         try { $motor = Invoke-Com $gui 'GetScriptingEngine' @() $ModosDeChamada }
-        catch { $detalhes.Add($_.Exception.Message) }
+        catch { if (-not $detalhes.Contains($_.Exception.Message)) { $detalhes.Add($_.Exception.Message) } }
         if ($null -ne $motor) { break }
     }
     if (-not $achouSap) { throw 'SAP não encontrado: abra o SAP e faça login antes de executar' }
     if ($null -eq $motor) {
         if ($detalhes.Count -eq 0) { $detalhes.Add('GetScriptingEngine não devolveu nada') }
-        # TYPE_E_CANTLOADLIBRARY: o SAP GUI e o PowerShell não têm o mesmo número de bits.
-        if (($detalhes -join ' ') -match '80029C4A') {
-            if ($Bits -eq 64) { throw 'o SAP GUI instalado é de 32 bits e o app abriu em 64 bits: abra pelo macro.cmd, sem --64' }
-            throw 'o SAP GUI instalado é de 64 bits e o app abriu em 32 bits: abra com macro.cmd --64'
-        }
-        throw ('SAP GUI Scripting indisponível (' + ($detalhes -join ' | ') + ')')
+        throw ('SAP GUI Scripting indisponível em ' + $Bits + ' bits (' + ($detalhes -join ' | ') + '). Rode /diagnostico e envie o resultado')
     }
 
     $sessao = $null
@@ -92,6 +106,117 @@ function Conectar-Sap {
     }
     catch { throw "SAP aberto, mas sem sessão logada ($($_.Exception.Message))" }
     $script:Sessao = $sessao
+    $script:IdiomaCom = $script:UltimoIdioma
+    $script:IdiomaComDefinido = $true
+}
+
+# Mostra, passo a passo, o que funciona e o que falha na conexão com o SAP.
+function Diagnosticar {
+    function Resumir([string]$Texto) {
+        $Texto = ($Texto -replace '\s+', ' ').Trim()
+        if ($Texto.Length -gt 110) { $Texto = $Texto.Substring(0, 110) + '...' }
+        return $Texto
+    }
+    function Relatar([string]$Passo, [string]$Resultado, [bool]$Ok) {
+        $cor = $Ruim
+        $marca = '  × '
+        if ($Ok) { $cor = $Bom; $marca = '  √ ' }
+        Imprimir @($marca, $cor, $Passo, $null, "  $Resultado", $Fraco)
+    }
+
+    Imprimir @("  App v$Versao · PowerShell $($PSVersionTable.PSVersion) · idioma $([System.Globalization.CultureInfo]::CurrentCulture.Name)", $Fraco)
+    if ([Environment]::OSVersion.Platform -ne 'Win32NT') {
+        Imprimir @('  O diagnóstico só funciona no Windows.', $Fraco)
+        Imprimir
+        return
+    }
+
+    $processos = @(Get-Process -Name 'saplogon', 'saplgpad', 'sapgui' -ErrorAction SilentlyContinue)
+    if ($processos.Count -eq 0) { Relatar 'Processo do SAP' 'nenhum saplogon/sapgui aberto' $false }
+    foreach ($processo in $processos) {
+        $caminho = '(caminho inacessível deste PowerShell: o processo provavelmente é de 64 bits)'
+        try { if ($processo.Path) { $caminho = $processo.Path } } catch { }
+        Relatar "Processo $($processo.ProcessName)" $caminho $true
+    }
+
+    $idiomas = [ordered]@{
+        'en-US'     = $null
+        'do Windows' = [System.Globalization.CultureInfo]::CurrentCulture
+        'neutro'    = [System.Globalization.CultureInfo]::InvariantCulture
+    }
+    foreach ($nomeFonte in $FontesDoSap.Keys) {
+        $gui = $null
+        try { $gui = & $FontesDoSap[$nomeFonte] } catch { Relatar $nomeFonte (Resumir (Obter-MensagemDeErro $_)) $false; continue }
+        if ($null -eq $gui) { Relatar $nomeFonte 'não devolveu nada' $false; continue }
+        Relatar $nomeFonte 'SAP encontrado' $true
+
+        $tipo = $gui.GetType()
+        $motor = $null
+        foreach ($modo in $ModosDeChamada) {
+            foreach ($nomeIdioma in $idiomas.Keys) {
+                $passo = "$nomeFonte > GetScriptingEngine [$modo, $nomeIdioma]"
+                try {
+                    $r = $tipo.InvokeMember('GetScriptingEngine', [System.Reflection.BindingFlags]$modo, $null, $gui, @(), $null, $idiomas[$nomeIdioma], $null)
+                    if ($null -eq $r) { Relatar $passo 'não devolveu nada' $false }
+                    else { $motor = $r; Relatar $passo 'ok' $true }
+                }
+                catch { Relatar $passo (Resumir (Obter-MensagemDeErro $_)) $false }
+            }
+        }
+        try {
+            $r = $gui.GetScriptingEngine
+            if ($null -eq $r) { Relatar "$nomeFonte > GetScriptingEngine [nativo]" 'não devolveu nada' $false }
+            else { Relatar "$nomeFonte > GetScriptingEngine [nativo]" "ok ($($r.GetType().Name))" $true }
+        }
+        catch { Relatar "$nomeFonte > GetScriptingEngine [nativo]" (Resumir (Obter-MensagemDeErro $_)) $false }
+
+        if ($null -ne $motor) {
+            try {
+                $conexao = Invoke-Com $motor 'Children' @(0) $ModosDeChamada
+                $sessao = Invoke-Com $conexao 'Children' @(0) $ModosDeChamada
+                $ok = $null -ne $sessao
+                Relatar "$nomeFonte > sessão" $(if ($ok) { 'ok' } else { 'não devolveu nada' }) $ok
+            }
+            catch { Relatar "$nomeFonte > sessão" (Resumir (Obter-MensagemDeErro $_)) $false }
+        }
+    }
+
+    # O mesmo teste pelo VBScript, que é como o SAP grava os scripts.
+    $roteiro = Join-Path ([System.IO.Path]::GetTempPath()) 'macro-app-diagnostico.vbs'
+    $linhas = @(
+        'On Error Resume Next',
+        'Set g = GetObject("SAPGUI")',
+        'If Err.Number <> 0 Then',
+        '  WScript.Echo "FALHA GetObject " & Hex(Err.Number) & " " & Err.Description',
+        '  WScript.Quit',
+        'End If',
+        'Set a = g.GetScriptingEngine',
+        'If Err.Number <> 0 Then',
+        '  WScript.Echo "FALHA GetScriptingEngine " & Hex(Err.Number) & " " & Err.Description',
+        '  WScript.Quit',
+        'End If',
+        'WScript.Echo "ok, conexoes abertas: " & a.Children.Count'
+    )
+    try {
+        Set-Content -LiteralPath $roteiro -Value $linhas -Encoding ASCII
+        $pasta64 = 'System32'
+        if (-not [Environment]::Is64BitProcess) { $pasta64 = 'Sysnative' }
+        $executaveis = [ordered]@{
+            'VBScript 32 bits' = Join-Path $env:windir 'SysWOW64\cscript.exe'
+            'VBScript 64 bits' = Join-Path $env:windir "$pasta64\cscript.exe"
+        }
+        foreach ($nome in $executaveis.Keys) {
+            if (-not (Test-Path -LiteralPath $executaveis[$nome])) { Relatar $nome 'cscript.exe não encontrado' $false; continue }
+            try {
+                $saida = (& $executaveis[$nome] '//nologo' $roteiro 2>&1 | Out-String)
+                Relatar $nome (Resumir $saida) ($saida -match '^\s*ok')
+            }
+            catch { Relatar $nome (Resumir (Obter-MensagemDeErro $_)) $false }
+        }
+    }
+    catch { Relatar 'VBScript' (Resumir (Obter-MensagemDeErro $_)) $false }
+    finally { Remove-Item -LiteralPath $roteiro -ErrorAction SilentlyContinue }
+    Imprimir
 }
 
 function Sap-Elemento([string]$Id) {
@@ -263,6 +388,7 @@ if (Test-Path -LiteralPath $pastaMacros) {
     }
 }
 $Comandos.Add(@{ Nome = 'ajuda'; Descricao = 'Mostra os comandos disponíveis' })
+$Comandos.Add(@{ Nome = 'diagnostico'; Descricao = 'Testa a conexão com o SAP passo a passo' })
 $Comandos.Add(@{ Nome = 'limpar'; Descricao = 'Limpa a tela' })
 $Comandos.Add(@{ Nome = 'sair'; Descricao = 'Fecha o app' })
 
@@ -327,10 +453,13 @@ function Executar-Comando([string]$Linha) {
         if ($script:Itens.Count -gt 0) { Executar-Macro }
     }
     elseif ($nome -eq 'ajuda') {
-        foreach ($c in $Comandos) { Imprimir @(('  /' + $c.Nome.PadRight(8)), $Destaque, "  $($c.Descricao)") }
+        foreach ($c in $Comandos) { Imprimir @(('  /' + $c.Nome.PadRight(11)), $Destaque, "  $($c.Descricao)") }
         Imprimir
         Imprimir @('  Dica: a lista pode ir junto do comando, ex.: /pdfs 12345 67890', $Fraco)
         Imprimir
+    }
+    elseif ($nome -eq 'diagnostico') {
+        Diagnosticar
     }
     elseif ($nome -eq 'limpar') {
         [Console]::Clear()
@@ -506,7 +635,7 @@ function Desenhar-Entrada {
         $linhas.Add(@('  / para comandos · Ctrl+C para sair', $Fraco))
     }
     for ($i = 0; $i -lt $sugestoes.Count; $i++) {
-        $nome = '  /' + $sugestoes[$i].Nome.PadRight(8) + '  '
+        $nome = '  /' + $sugestoes[$i].Nome.PadRight(11) + '  '
         if ($i -eq [Math]::Min($script:Escolhida, $sugestoes.Count - 1)) { $linhas.Add(@($nome, $Destaque, $sugestoes[$i].Descricao)) }
         else { $linhas.Add(@(($nome + $sugestoes[$i].Descricao), $Fraco)) }
     }
