@@ -24,21 +24,24 @@ O SAP GUI Scripting precisa estar habilitado, como já é exigido pelas macros V
 
 ## Desenvolvimento
 
-Requer Go 1.24+.
+Feito em C# para .NET Framework 4.8, que já vem no Windows 10 e 11. Para compilar
+basta o SDK do .NET 8 ou mais novo, em qualquer sistema:
 
 ```bash
-go run . --simular
+dotnet build -c Release -o dist
 ```
 
-`--simular` roda as macros sem SAP (qualquer item contendo "erro" falha).
+O resultado é o `dist/macro.exe`.
 
-Gerar o executável para Windows, a partir de qualquer sistema:
+Para testar sem SAP, abra com `macro.exe --simular` (qualquer item contendo "erro" falha).
 
-```bash
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/macro.exe .
-```
+### Estrutura
+
+- `Sap/`: conexão com a sessão aberta do SAP GUI (SAP GUI Scripting).
+- `Macros/`: uma classe por macro.
+- `Ui/`: o terminal.
 
 ### Nova macro
 
-Crie um arquivo em `internal/macro/` com um valor `Macro` e adicione-o em `All()`
-(`internal/macro/macro.go`). Ela aparece sozinha na lista de comandos.
+Crie em `Macros/` uma classe que herda de `Macro` e adicione-a em `Macro.All`
+(`Macros/Macro.cs`). Ela aparece sozinha na lista de comandos.
