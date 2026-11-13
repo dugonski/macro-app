@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Versao = '0.1.0'
+$Versao = '0.1.1'
 if (-not $Raiz) { $Raiz = $PSScriptRoot }
 
 $Destaque = 'DarkYellow'
@@ -21,41 +21,69 @@ $Ruim = 'Red'
 $script:Sessao = $null
 $script:MaterialSimulado = ''
 
+$ModosDeChamada = @('InvokeMethod', 'GetProperty', 'InvokeMethod,GetProperty')
+
 # Chama um método ou propriedade pelo nome (IDispatch), como o VBA faz.
-function Invoke-Com($Alvo, [string]$Nome, [object[]]$Argumentos = @(), [string]$Modo = 'InvokeMethod,GetProperty') {
-    try {
-        $tipo = $Alvo.GetType()
-        return $tipo.InvokeMember($Nome, [System.Reflection.BindingFlags]$Modo, $null, $Alvo, $Argumentos)
+# $Modos lista as formas de chamada a tentar, em ordem. A vírgula no retorno
+# impede o PowerShell de desmontar objetos do SAP que são coleções.
+function Invoke-Com($Alvo, [string]$Nome, [object[]]$Argumentos = @(), [string[]]$Modos = @('InvokeMethod')) {
+    $tipo = $Alvo.GetType()
+    $ultimoErro = ''
+    foreach ($modo in $Modos) {
+        try {
+            $resultado = $tipo.InvokeMember($Nome, [System.Reflection.BindingFlags]$modo, $null, $Alvo, $Argumentos)
+            return , $resultado
+        }
+        catch {
+            $erro = $_.Exception
+            while ($erro.InnerException) { $erro = $erro.InnerException }
+            $ultimoErro = $erro.Message
+        }
     }
-    catch {
-        $erro = $_.Exception
-        while ($erro.InnerException) { $erro = $erro.InnerException }
-        throw "$Nome falhou: $($erro.Message)"
-    }
+    throw "$Nome falhou: $ultimoErro"
 }
 
 # Equivale a GetObject("SAPGUI").GetScriptingEngine.Children(0).Children(0).
 function Conectar-Sap {
     if ($Simular) { return }
-    $naoEncontrado = 'SAP não encontrado: abra o SAP e faça login antes de executar'
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') {
         throw 'o SAP GUI só está disponível no Windows (use --simular para testar)'
     }
 
-    try { $gui = [System.Runtime.InteropServices.Marshal]::BindToMoniker('SAPGUI') }
-    catch { throw $naoEncontrado }
-
+    # Duas formas de achar o SAP aberto; a segunda é o utilitário que o próprio SAP GUI instala.
+    $fontes = @(
+        { , [System.Runtime.InteropServices.Marshal]::BindToMoniker('SAPGUI') },
+        {
+            $rot = New-Object -ComObject 'SapROTWr.SapROTWrapper'
+            , (Invoke-Com $rot 'GetROTEntry' @('SAPGUI') $ModosDeChamada)
+        }
+    )
     $motor = $null
-    try { $motor = Invoke-Com $gui 'GetScriptingEngine' } catch { }
-    if ($null -eq $motor) { throw 'SAP GUI Scripting indisponível: verifique se o scripting está habilitado' }
+    $achouSap = $false
+    $detalhes = [System.Collections.Generic.List[string]]::new()
+    foreach ($fonte in $fontes) {
+        $gui = $null
+        try { $gui = & $fonte } catch { }
+        if ($null -eq $gui) { continue }
+        $achouSap = $true
+        try { $motor = Invoke-Com $gui 'GetScriptingEngine' @() $ModosDeChamada }
+        catch { $detalhes.Add($_.Exception.Message) }
+        if ($null -ne $motor) { break }
+    }
+    if (-not $achouSap) { throw 'SAP não encontrado: abra o SAP e faça login antes de executar' }
+    if ($null -eq $motor) {
+        if ($detalhes.Count -eq 0) { $detalhes.Add('GetScriptingEngine não devolveu nada') }
+        throw ('SAP GUI Scripting indisponível (' + ($detalhes -join ' | ') + ')')
+    }
 
     $sessao = $null
     try {
-        $conexao = Invoke-Com $motor 'Children' @(0)
-        $sessao = Invoke-Com $conexao 'Children' @(0)
+        $conexao = Invoke-Com $motor 'Children' @(0) $ModosDeChamada
+        if ($null -eq $conexao) { throw 'nenhuma conexão aberta' }
+        $sessao = Invoke-Com $conexao 'Children' @(0) $ModosDeChamada
+        if ($null -eq $sessao) { throw 'nenhuma sessão aberta' }
     }
-    catch { }
-    if ($null -eq $sessao) { throw $naoEncontrado }
+    catch { throw "SAP aberto, mas sem sessão logada ($($_.Exception.Message))" }
     $script:Sessao = $sessao
 }
 
@@ -63,7 +91,7 @@ function Sap-Elemento([string]$Id) {
     $elemento = $null
     try { $elemento = Invoke-Com $script:Sessao 'findById' @($Id) } catch { }
     if ($null -eq $elemento) { throw "elemento `"$Id`" não encontrado na tela do SAP" }
-    return $elemento
+    return , $elemento
 }
 
 # Preenche um campo:  session.findById(id).Text = texto
@@ -72,7 +100,7 @@ function Sap-Texto([string]$Id, [string]$Texto) {
         if ($Id.EndsWith('MATNR')) { $script:MaterialSimulado = $Texto }
         return
     }
-    $null = Invoke-Com (Sap-Elemento $Id) 'Text' @($Texto) 'SetProperty'
+    $null = Invoke-Com (Sap-Elemento $Id) 'Text' @($Texto) @('SetProperty')
 }
 
 # Envia uma tecla virtual:  session.findById(janela).sendVKey tecla
@@ -106,9 +134,9 @@ function Sap-ConferirStatus {
         return
     }
     $barra = Sap-Elemento 'wnd[0]/sbar'
-    $tipo = [string](Invoke-Com $barra 'MessageType')
+    $tipo = [string](Invoke-Com $barra 'MessageType' @() @('GetProperty'))
     if ($tipo -eq 'E' -or $tipo -eq 'A') {
-        $texto = [string](Invoke-Com $barra 'Text')
+        $texto = [string](Invoke-Com $barra 'Text' @() @('GetProperty'))
         if (-not $texto) { $texto = 'o SAP recusou o item' }
         throw $texto
     }
