@@ -24,8 +24,8 @@ para executar. Também dá para passar direto: `/pdfs 12345 67890`.
 
 O SAP GUI Scripting precisa estar habilitado, como já é exigido pelas macros VBA.
 
-O `macro.cmd` abre o PowerShell de 32 bits, porque o SAP GUI normalmente é de
-32 bits. Se o seu SAP GUI for de 64 bits, abra com `macro.cmd --64`.
+Se a conexão com o SAP falhar, rode `/diagnostico` para ver em que passo. Também
+dá para abrir no PowerShell de 32 bits com `macro.cmd --32`.
 
 Para testar sem SAP, abra pelo Prompt de Comando com `macro.cmd --simular`
 (qualquer item contendo "erro" falha).

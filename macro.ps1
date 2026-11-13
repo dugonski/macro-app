@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Bits = 32
 if ([Environment]::Is64BitProcess) { $Bits = 64 }
-$Versao = "0.1.3 ($Bits bits)"
+$Versao = "0.1.4 ($Bits bits)"
 if (-not $Raiz) { $Raiz = $PSScriptRoot }
 
 $Destaque = 'DarkYellow'
@@ -24,6 +24,12 @@ $script:Sessao = $null
 $script:MaterialSimulado = ''
 
 $ModosDeChamada = @('InvokeMethod', 'GetProperty', 'InvokeMethod,GetProperty')
+
+# IMPORTANTE: nunca acesse membros de um objeto do SAP direto pelo PowerShell
+# (nem .GetType()). Ao fazer isso ele tenta carregar a biblioteca de tipos do
+# SAP GUI e falha com TYPE_E_CANTLOADLIBRARY. Toda chamada passa por Invoke-Com,
+# que usa o tipo genérico de objeto COM e só conversa por nome.
+$TipoCom = [System.Type]::GetType('System.__ComObject')
 
 # O SAP procura a biblioteca de scripting conforme o idioma informado na chamada,
 # e em algumas instalações só um deles funciona. Enquanto não se sabe qual, as
@@ -47,12 +53,11 @@ function Obter-MensagemDeErro($Registro) {
 # $Modos lista as formas de chamada a tentar, em ordem. A vírgula no retorno
 # impede o PowerShell de desmontar objetos do SAP que são coleções.
 function Invoke-Com($Alvo, [string]$Nome, [object[]]$Argumentos = @(), [string[]]$Modos = @('InvokeMethod')) {
-    $tipo = $Alvo.GetType()
     $ultimoErro = ''
     foreach ($modo in $Modos) {
         foreach ($idioma in (Obter-IdiomasCom)) {
             try {
-                $resultado = $tipo.InvokeMember($Nome, [System.Reflection.BindingFlags]$modo, $null, $Alvo, $Argumentos, $null, $idioma, $null)
+                $resultado = $TipoCom.InvokeMember($Nome, [System.Reflection.BindingFlags]$modo, $null, $Alvo, $Argumentos, $null, $idioma, $null)
                 $script:UltimoIdioma = $idioma
                 return , $resultado
             }
@@ -150,26 +155,18 @@ function Diagnosticar {
         if ($null -eq $gui) { Relatar $nomeFonte 'não devolveu nada' $false; continue }
         Relatar $nomeFonte 'SAP encontrado' $true
 
-        $tipo = $gui.GetType()
         $motor = $null
         foreach ($modo in $ModosDeChamada) {
             foreach ($nomeIdioma in $idiomas.Keys) {
                 $passo = "$nomeFonte > GetScriptingEngine [$modo, $nomeIdioma]"
                 try {
-                    $r = $tipo.InvokeMember('GetScriptingEngine', [System.Reflection.BindingFlags]$modo, $null, $gui, @(), $null, $idiomas[$nomeIdioma], $null)
+                    $r = $TipoCom.InvokeMember('GetScriptingEngine', [System.Reflection.BindingFlags]$modo, $null, $gui, @(), $null, $idiomas[$nomeIdioma], $null)
                     if ($null -eq $r) { Relatar $passo 'não devolveu nada' $false }
                     else { $motor = $r; Relatar $passo 'ok' $true }
                 }
                 catch { Relatar $passo (Resumir (Obter-MensagemDeErro $_)) $false }
             }
         }
-        try {
-            $r = $gui.GetScriptingEngine
-            if ($null -eq $r) { Relatar "$nomeFonte > GetScriptingEngine [nativo]" 'não devolveu nada' $false }
-            else { Relatar "$nomeFonte > GetScriptingEngine [nativo]" "ok ($($r.GetType().Name))" $true }
-        }
-        catch { Relatar "$nomeFonte > GetScriptingEngine [nativo]" (Resumir (Obter-MensagemDeErro $_)) $false }
-
         if ($null -ne $motor) {
             try {
                 $conexao = Invoke-Com $motor 'Children' @(0) $ModosDeChamada
@@ -459,7 +456,8 @@ function Executar-Comando([string]$Linha) {
         Imprimir
     }
     elseif ($nome -eq 'diagnostico') {
-        Diagnosticar
+        try { Diagnosticar }
+        catch { Imprimir @("  × diagnóstico interrompido: $(Obter-MensagemDeErro $_)", $Ruim); Imprimir }
     }
     elseif ($nome -eq 'limpar') {
         [Console]::Clear()
