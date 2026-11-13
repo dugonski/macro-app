@@ -10,21 +10,32 @@ permissions:
   contents: write
 
 jobs:
-  windows-exe:
-    runs-on: ubuntu-latest
+  pacote:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-      - name: Build macro.exe
-        run: dotnet build -c Release -warnaserror -o dist
+      - name: Confere a sintaxe no Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $falhou = $false
+          foreach ($arquivo in Get-ChildItem -Recurse -Filter *.ps1) {
+            $erros = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($arquivo.FullName, [ref]$null, [ref]$erros)
+            if ($erros.Count -gt 0) { $falhou = $true; Write-Host $arquivo.FullName; $erros | Out-String | Write-Host }
+          }
+          if ($falhou) { exit 1 }
+      - name: Monta o zip
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path macro.cmd, macro.ps1, macros -DestinationPath dist/macro-app.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: macro-windows
-          path: dist/macro.exe
+          name: macro-app
+          path: dist/macro-app.zip
       - name: Publica no release
         if: startsWith(github.ref, 'refs/tags/v')
-        run: gh release create "$GITHUB_REF_NAME" dist/macro.exe --generate-notes
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/macro-app.zip --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
