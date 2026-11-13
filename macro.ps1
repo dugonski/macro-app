@@ -6,7 +6,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Versao = '0.1.1'
+$Bits = 32
+if ([Environment]::Is64BitProcess) { $Bits = 64 }
+$Versao = "0.1.2 ($Bits bits)"
 if (-not $Raiz) { $Raiz = $PSScriptRoot }
 
 $Destaque = 'DarkYellow'
@@ -73,6 +75,11 @@ function Conectar-Sap {
     if (-not $achouSap) { throw 'SAP não encontrado: abra o SAP e faça login antes de executar' }
     if ($null -eq $motor) {
         if ($detalhes.Count -eq 0) { $detalhes.Add('GetScriptingEngine não devolveu nada') }
+        # TYPE_E_CANTLOADLIBRARY: o SAP GUI e o PowerShell não têm o mesmo número de bits.
+        if (($detalhes -join ' ') -match '80029C4A') {
+            if ($Bits -eq 64) { throw 'o SAP GUI instalado é de 32 bits e o app abriu em 64 bits: abra pelo macro.cmd, sem --64' }
+            throw 'o SAP GUI instalado é de 64 bits e o app abriu em 32 bits: abra com macro.cmd --64'
+        }
         throw ('SAP GUI Scripting indisponível (' + ($detalhes -join ' | ') + ')')
     }
 
