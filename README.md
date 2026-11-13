@@ -1,13 +1,14 @@
 # Macro App
 
-App de terminal para Windows que executa macros do SAP. É um único `macro.exe`:
-não precisa instalar nada, basta copiar e abrir.
+App de terminal para Windows que executa macros do SAP. É feito em PowerShell,
+que já vem no Windows: não precisa instalar nada nem rodar nenhum `.exe`.
 
 ## Uso
 
-1. Abra o SAP e faça login.
-2. Abra o `macro.exe`.
-3. Digite `/` para ver os comandos.
+1. Copie a pasta inteira (`macro.cmd`, `macro.ps1` e `macros`) para o computador.
+2. Abra o SAP e faça login.
+3. Dê dois cliques em `macro.cmd`.
+4. Digite `/` para ver os comandos.
 
 | Comando   | O que faz                                                             |
 |-----------|-----------------------------------------------------------------------|
@@ -22,26 +23,24 @@ para executar. Também dá para passar direto: `/pdfs 12345 67890`.
 
 O SAP GUI Scripting precisa estar habilitado, como já é exigido pelas macros VBA.
 
-## Desenvolvimento
+Para testar sem SAP, abra pelo Prompt de Comando com `macro.cmd --simular`
+(qualquer item contendo "erro" falha).
 
-Feito em C# para .NET Framework 4.8, que já vem no Windows 10 e 11. Para compilar
-basta o SDK do .NET 8 ou mais novo, em qualquer sistema:
+## Nova macro
 
-```bash
-dotnet build -c Release -o dist
-```
+Cada arquivo `.ps1` dentro de `macros` é uma macro e aparece sozinho na lista de
+comandos. Copie `macros/pdfs-md04.ps1`, troque o comando e escreva os passos em
+`PorItem`. Os passos gravados pelo SAP em VBA viram:
 
-O resultado é o `dist/macro.exe`.
+| VBA                                         | Aqui                          |
+|---------------------------------------------|-------------------------------|
+| `session.findById(id).Text = valor`         | `Sap-Texto id valor`          |
+| `session.findById(janela).sendVKey n`       | `Sap-Tecla janela n`          |
+| `session.findById(id).press`                | `Sap-Clicar id`               |
+| `session.findById(id).pressButton botao`    | `Sap-Botao id botao`          |
+| `session.findById(janela).maximize`         | `Sap-Maximizar janela`        |
 
-Para testar sem SAP, abra com `macro.exe --simular` (qualquer item contendo "erro" falha).
+`Sap-ConferirStatus` interrompe o item com a mensagem do SAP quando a barra de
+status mostra erro.
 
-### Estrutura
-
-- `Sap/`: conexão com a sessão aberta do SAP GUI (SAP GUI Scripting).
-- `Macros/`: uma classe por macro.
-- `Ui/`: o terminal.
-
-### Nova macro
-
-Crie em `Macros/` uma classe que herda de `Macro` e adicione-a em `Macro.All`
-(`Macros/Macro.cs`). Ela aparece sozinha na lista de comandos.
+Salve os arquivos `.ps1` em UTF-8 com BOM, para os acentos aparecerem certos.
